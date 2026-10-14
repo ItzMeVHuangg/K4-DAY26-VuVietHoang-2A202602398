@@ -18,6 +18,7 @@ import os
 
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+from mcp.shared.exceptions import MCPError
 
 SERVER_URL = "http://localhost:8000/mcp"
 TOKEN = os.environ.get("MCP_AUTH_TOKEN", "dev-token-abc123")
@@ -45,5 +46,24 @@ async def main() -> None:
                 print(f"\nKết quả: {result.content[0].text}")
 
 
+def _find_mcp_error(exc: BaseException) -> MCPError | None:
+    """Tìm MCPError nằm sâu trong các lớp ExceptionGroup của anyio."""
+    if isinstance(exc, MCPError):
+        return exc
+    for sub in getattr(exc, "exceptions", ()):
+        found = _find_mcp_error(sub)
+        if found:
+            return found
+    return None
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except BaseException as exc:
+        err = _find_mcp_error(exc)
+        if err is None:
+            raise
+        print(f"Token đang dùng: {TOKEN!r}")
+        print(f"Xác thực thất bại: server từ chối request ({err})")
+        raise SystemExit(1)

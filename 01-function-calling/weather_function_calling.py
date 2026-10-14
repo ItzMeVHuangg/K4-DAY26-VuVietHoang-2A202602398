@@ -9,12 +9,14 @@ Cách chạy:
     python weather_function_calling.py
 """
 
+import time
+
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 client = genai.Client()
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.5-flash-lite"
 
 SYSTEM_INSTRUCTION = (
     "Bạn là trợ lý thời tiết thân thiện, trả lời bằng tiếng Việt tự nhiên. "
@@ -70,6 +72,26 @@ def get_weather(city: str) -> str:
     return json.dumps({"city": city, **mock_data.get(city, default)}, ensure_ascii=False)
 
 
+def generate(contents: list[types.Content], retries: int = 6):
+    """Gọi model, tự thử lại (backoff) khi server báo 5xx như 503 quá tải."""
+    for attempt in range(retries):
+        try:
+            return client.models.generate_content(
+                model=MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    tools=TOOLS,
+                    system_instruction=SYSTEM_INSTRUCTION,
+                ),
+            )
+        except errors.ServerError as e:
+            if attempt == retries - 1:
+                raise
+            wait = 2 ** (attempt + 1)
+            print(f"  [lỗi {e.code}] thử lại sau {wait}s ({attempt + 1}/{retries - 1})...")
+            time.sleep(wait)
+
+
 def run(prompt: str) -> str:
     """Gửi *prompt* tới Gemini, tự động xử lý function calling và trả về câu trả lời cuối."""
     contents: list[types.Content] = [
@@ -77,14 +99,7 @@ def run(prompt: str) -> str:
     ]
 
     # 3. Gọi model — model quyết định có gọi tool hay không
-    resp = client.models.generate_content(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            tools=TOOLS,
-            system_instruction=SYSTEM_INSTRUCTION,
-        ),
-    )
+    resp = generate(contents)
 
     # 4. Vòng lặp: nếu model yêu cầu tool, app TỰ THỰC THI rồi đưa kết quả trả lại
     while resp.function_calls:
@@ -104,14 +119,7 @@ def run(prompt: str) -> str:
 
         # Gửi kết quả tool trả về cho model
         contents.append(types.Content(role="user", parts=function_responses))
-        resp = client.models.generate_content(
-            model=MODEL,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                tools=TOOLS,
-                system_instruction=SYSTEM_INSTRUCTION,
-            ),
-        )
+        resp = generate(contents)
 
     # 5. Model tổng hợp câu trả lời cuối
     return resp.text
